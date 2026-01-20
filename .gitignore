@@ -1,1 +1,13 @@
 /target
+/target
+
+# Build artifacts (Arch Linux packages)
+/pkg/
+/src/
+*.pkg.tar.zst
+*.tar.gz
+*.tar.xz
+.SRCINFO
+
+# Cloning AUR repo
+aur-pg-tui/
