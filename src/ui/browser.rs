@@ -8,19 +8,59 @@ use ratatui::{
 use crate::app::{App, BrowserItem};
 
 pub fn render_browser(f: &mut Frame, app: &mut App, area: Rect) {
-    // Calculate visible height (subtract borders)
-    let visible_height = area.height.saturating_sub(2) as usize;
+    use ratatui::layout::{Constraint, Direction, Layout};
     
-    // Adjust scroll offset
-    app.adjust_scroll(visible_height);
+    // Split area into filter input and browser list
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Filter input
+            Constraint::Min(0),    // Browser list
+        ])
+        .split(area);
     
-    let items: Vec<ListItem> = app
-        .browser_items
+    // Render filter input box
+    let filter_text = if app.filter_active {
+        format!(" Filter: {}_", app.filter_input)
+    } else {
+        " Press '/' to filter".to_string()
+    };
+    
+    let filter_style = if app.filter_active {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    
+    let filter_widget = Paragraph::new(filter_text)
+        .style(filter_style)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(if app.filter_active { Color::Yellow } else { Color::Cyan }))
+        );
+    
+    f.render_widget(filter_widget, chunks[0]);
+    
+    // Get filtered items
+    let filtered_indices = app.get_filtered_items();
+    let visible_height = chunks[1].height.saturating_sub(2) as usize;
+    
+    // Adjust scroll offset for filtered view
+    let filtered_selected = filtered_indices.iter().position(|&idx| idx == app.browser_selected).unwrap_or(0);
+    let scroll_offset = if filtered_selected >= visible_height {
+        filtered_selected.saturating_sub(visible_height - 1)
+    } else {
+        0
+    };
+    
+    // Build list items from filtered results
+    let items: Vec<ListItem> = filtered_indices
         .iter()
-        .enumerate()
-        .skip(app.browser_scroll_offset)
+        .skip(scroll_offset)
         .take(visible_height)
-        .map(|(i, item)| {
+        .map(|&idx| {
+            let item = &app.browser_items[idx];
             let (icon, name, indent) = match item {
                 BrowserItem::Schema(name) => ("📁", name.as_str(), 0),
                 BrowserItem::Table(_, name) => ("📊", name.as_str(), 2),
@@ -29,7 +69,7 @@ pub fn render_browser(f: &mut Frame, app: &mut App, area: Rect) {
             let indent_str = " ".repeat(indent);
             let content = format!("{}{} {}", indent_str, icon, name);
             
-            let style = if i == app.browser_selected {
+            let style = if idx == app.browser_selected {
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD)
@@ -40,15 +80,21 @@ pub fn render_browser(f: &mut Frame, app: &mut App, area: Rect) {
             ListItem::new(content).style(style)
         })
         .collect();
+    
+    let title = if app.filter_active && !app.filter_input.is_empty() {
+        format!("Database Browser ({} filtered / {} total)", filtered_indices.len(), app.browser_items.len())
+    } else {
+        format!("Database Browser ({}/{})", app.browser_selected + 1, app.browser_items.len())
+    };
 
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .title(format!("Database Browser ({}/{})", app.browser_selected + 1, app.browser_items.len()))
+            .title(title)
             .border_style(Style::default().fg(Color::Cyan)),
     );
 
-    f.render_widget(list, area);
+    f.render_widget(list, chunks[1]);
 }
 
 pub fn render_details(f: &mut Frame, app: &App, area: Rect) {

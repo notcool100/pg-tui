@@ -63,6 +63,10 @@ pub struct App {
     
     // UI state
     pub error_message: Option<String>,
+    
+    // Filter state
+    pub filter_input: String,
+    pub filter_active: bool,
 }
 
 impl App {
@@ -93,6 +97,8 @@ impl App {
             query_result: None,
             query_cursor: 0,
             error_message: None,
+            filter_input: String::new(),
+            filter_active: false,
         }
     }
 
@@ -297,6 +303,56 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    // Filter methods
+    pub fn activate_filter(&mut self) {
+        self.filter_active = true;
+    }
+
+    pub fn clear_filter(&mut self) {
+        self.filter_input.clear();
+        self.filter_active = false;
+    }
+
+    pub fn handle_filter_input(&mut self, key: KeyCode) {
+        match key {
+            KeyCode::Char(c) => {
+                self.filter_input.push(c);
+            }
+            KeyCode::Backspace => {
+                self.filter_input.pop();
+            }
+            _ => {}
+        }
+    }
+
+    pub fn get_filtered_items(&self) -> Vec<usize> {
+        if !self.filter_active || self.filter_input.is_empty() {
+            return (0..self.browser_items.len()).collect();
+        }
+
+        let filter_lower = self.filter_input.to_lowercase();
+        let mut filtered = Vec::new();
+
+        for (idx, item) in self.browser_items.iter().enumerate() {
+            let matches = match item {
+                BrowserItem::Schema(name) => {
+                    name.to_lowercase().contains(&filter_lower)
+                }
+                BrowserItem::Table(schema, name) => {
+                    // Match if table name or schema name matches
+                    name.to_lowercase().contains(&filter_lower)
+                        || schema.to_lowercase().contains(&filter_lower)
+                }
+            };
+
+            if matches {
+                filtered.push(idx);
+            }
+        }
+
+        filtered
     }
 }
 
