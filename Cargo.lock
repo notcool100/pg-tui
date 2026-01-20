@@ -518,6 +518,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
+name = "pg-tui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crossterm",
+ "dirs",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-postgres",
+ "tui-textarea",
+]
+
+[[package]]
 name = "phf"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -593,21 +608,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "535d180e0ecab6268a3e718bb9fd44db66bbbc256257165fc699dadf70d16fe7"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "psql_cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "crossterm",
- "dirs",
- "ratatui",
- "serde",
- "serde_json",
- "tokio",
- "tokio-postgres",
- "tui-textarea",
 ]
 
 [[package]]

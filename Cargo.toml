@@ -1,7 +1,15 @@
 [package]
-name = "psql_cli"
+name = "pg-tui"
 version = "0.1.0"
 edition = "2021"
+authors = ["anjaljoshi6@gmail.com"]
+description = "A modern PostgreSQL TUI client with autocomplete, syntax highlighting, and query formatting"
+license = "MIT"
+repository = "https://github.com/notcool100/pg-tui"
+homepage = "https://github.com/notcool100/pg-tui"
+keywords = ["postgresql", "tui", "database", "cli", "terminal"]
+categories = ["command-line-utilities", "database"]
+readme = "README.md"
 
 [dependencies]
 # TUI Framework
