@@ -88,13 +88,19 @@ pub struct App {
     pub query_input: String,
     pub query_result: Option<QueryResult>,
     pub query_cursor: usize,
+    pub query_scroll_offset: usize,
+    pub result_scroll_offset: usize,
     
     // UI state
     pub error_message: Option<String>,
     
-    // Filter state
+    // Filter state (browser)
     pub filter_input: String,
     pub filter_active: bool,
+    
+    // Filter state (results)
+    pub results_filter_input: String,
+    pub results_filter_active: bool,
     
     // Expanded items tracking
     pub expanded_items: HashSet<String>,
@@ -133,9 +139,13 @@ impl App {
             query_input: String::new(),
             query_result: None,
             query_cursor: 0,
+            query_scroll_offset: 0,
+            result_scroll_offset: 0,
             error_message: None,
             filter_input: String::new(),
             filter_active: false,
+            results_filter_input: String::new(),
+            results_filter_active: false,
             expanded_items: HashSet::new(),
         }
     }
@@ -488,6 +498,35 @@ impl App {
         }
     }
 
+    pub fn adjust_query_scroll(&mut self, visible_lines: usize) {
+        // Calculate which line the cursor is on
+        let text_before_cursor = &self.query_input[..self.query_cursor.min(self.query_input.len())];
+        let cursor_line = text_before_cursor.matches('\n').count();
+        
+        // Adjust scroll to keep cursor visible
+        if cursor_line < self.query_scroll_offset {
+            // Cursor is above visible area, scroll up
+            self.query_scroll_offset = cursor_line;
+        } else if cursor_line >= self.query_scroll_offset + visible_lines {
+            // Cursor is below visible area, scroll down
+            self.query_scroll_offset = cursor_line - visible_lines + 1;
+        }
+    }
+
+    pub fn scroll_results_left(&mut self) {
+        if self.result_scroll_offset > 0 {
+            self.result_scroll_offset -= 1;
+        }
+    }
+
+    pub fn scroll_results_right(&mut self) {
+        if let Some(result) = &self.query_result {
+            if self.result_scroll_offset < result.columns.len().saturating_sub(1) {
+                self.result_scroll_offset += 1;
+            }
+        }
+    }
+
     pub async fn execute_query(&mut self) -> Result<()> {
         if let Some(client) = self.db.client() {
             let sql = self.query_input.trim();
@@ -504,6 +543,54 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    // Results filter methods
+    pub fn activate_results_filter(&mut self) {
+        self.results_filter_active = true;
+    }
+
+    pub fn clear_results_filter(&mut self) {
+        self.results_filter_input.clear();
+        self.results_filter_active = false;
+    }
+
+    pub fn handle_results_filter_input(&mut self, key: KeyCode) {
+        match key {
+            KeyCode::Char(c) => {
+                self.results_filter_input.push(c);
+            }
+            KeyCode::Backspace => {
+                self.results_filter_input.pop();
+            }
+            _ => {}
+        }
+    }
+
+    pub fn get_filtered_rows(&self) -> Option<Vec<usize>> {
+        if !self.results_filter_active || self.results_filter_input.is_empty() {
+            return None;
+        }
+
+        if let Some(result) = &self.query_result {
+            let filter_lower = self.results_filter_input.to_lowercase();
+            let mut filtered_indices = Vec::new();
+
+            for (row_idx, row) in result.rows.iter().enumerate() {
+                // Check if any cell in the row contains the filter text
+                let matches = row.iter().any(|cell| {
+                    cell.to_lowercase().contains(&filter_lower)
+                });
+
+                if matches {
+                    filtered_indices.push(row_idx);
+                }
+            }
+
+            Some(filtered_indices)
+        } else {
+            None
+        }
     }
 
     // Filter methods

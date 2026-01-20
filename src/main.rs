@@ -76,9 +76,33 @@ async fn run_app<B: ratatui::backend::Backend>(
                             }
                         }
                         AppMode::Query => {
-                            // Check for Ctrl+Enter to execute query
-                            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Enter {
+                            // Handle results filter mode first
+                            if app.results_filter_active {
+                                match key.code {
+                                    KeyCode::Esc => {
+                                        app.clear_results_filter();
+                                    }
+                                    _ => {
+                                        app.handle_results_filter_input(key.code);
+                                    }
+                                }
+                            // Check for Ctrl+F to activate filter
+                            } else if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('f') {
+                                if app.query_result.is_some() {
+                                    app.activate_results_filter();
+                                }
+                            // Check for Ctrl+Enter or F5 to execute query
+                            } else if (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Enter)
+                                || key.code == KeyCode::F(5) {
                                 app.execute_query().await?;
+                                // Reset scroll offset for new results
+                                app.result_scroll_offset = 0;
+                            } else if key.modifiers.contains(KeyModifiers::SHIFT) && key.code == KeyCode::Left {
+                                // Scroll results left
+                                app.scroll_results_left();
+                            } else if key.modifiers.contains(KeyModifiers::SHIFT) && key.code == KeyCode::Right {
+                                // Scroll results right
+                                app.scroll_results_right();
                             } else if handle_query_input(app, key.code).await? {
                                 return Ok(());
                             }
@@ -213,13 +237,11 @@ async fn handle_query_input(app: &mut App, key: KeyCode) -> Result<bool> {
     match key {
         KeyCode::Char('q') if app.query_input.is_empty() => return Ok(true),
         KeyCode::Tab => app.mode = AppMode::Browser,
-        KeyCode::F(5) => {
-            // F5 to execute query
-            app.execute_query().await?;
-        }
         _ => {
             // Handle text input in query editor
             app.handle_query_input(key);
+            // Auto-scroll to keep cursor visible (10 height - 2 for borders = 8 visible lines)
+            app.adjust_query_scroll(8);
         }
     }
     Ok(false)
