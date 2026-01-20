@@ -27,57 +27,157 @@ pub fn render_query(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_query_editor(f: &mut Frame, app: &App, area: Rect) {
+    use ratatui::text::{Line, Span};
+    use crate::syntax::SqlHighlighter;
+    
     let help_text = if app.query_input.is_empty() {
         "\n  Type your SQL query here\n  Press Ctrl+Enter or F5 to execute\n  Tab to switch to browser mode"
     } else {
         ""
     };
 
-    let text = if app.query_input.is_empty() {
-        help_text.to_string()
+    if app.query_input.is_empty() {
+        // Show help text
+        let editor = Paragraph::new(help_text)
+            .style(Style::default().fg(Color::DarkGray))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("SQL Query Editor (Ctrl+Enter or F5 to execute)")
+                    .border_style(Style::default().fg(Color::Cyan)),
+            )
+            .wrap(Wrap { trim: false });
+        
+        f.render_widget(editor, area);
     } else {
-        // Insert cursor at the current position
+        // Apply syntax highlighting
+        let highlighter = SqlHighlighter::new();
+        
+        // Insert cursor marker
         let mut display_text = app.query_input.clone();
-        // Ensure cursor position is valid
         let cursor_pos = app.query_cursor.min(display_text.len());
-        // Insert a visible cursor character at the cursor position
         display_text.insert(cursor_pos, '█');
         
-        // Split into lines for scrolling
-        let lines: Vec<&str> = display_text.split('\n').collect();
+        // Tokenize with syntax highlighting
+        let tokens = highlighter.tokenize(&display_text);
+        
+        // Build styled lines
+        let mut current_line_spans: Vec<Span> = Vec::new();
+        let mut lines: Vec<Line> = Vec::new();
+        
+        for token in tokens {
+            // Check if token contains newlines
+            if token.text.contains('\n') {
+                let parts: Vec<&str> = token.text.split('\n').collect();
+                for (i, part) in parts.iter().enumerate() {
+                    if !part.is_empty() {
+                        current_line_spans.push(Span::styled(part.to_string(), token.style()));
+                    }
+                    if i < parts.len() - 1 {
+                        // End of line
+                        lines.push(Line::from(current_line_spans.clone()));
+                        current_line_spans.clear();
+                    }
+                }
+            } else {
+                current_line_spans.push(Span::styled(token.text.clone(), token.style()));
+            }
+        }
+        
+        // Add remaining spans as last line
+        if !current_line_spans.is_empty() {
+            lines.push(Line::from(current_line_spans));
+        }
+        
+        // Handle scrolling
         let total_lines = lines.len();
-        
-        // Calculate visible area (subtract 2 for borders)
         let visible_lines = (area.height.saturating_sub(2)) as usize;
-        
-        // Get visible lines based on scroll offset
         let start = app.query_scroll_offset;
         let end = (start + visible_lines).min(total_lines);
-        let visible_text: Vec<&str> = lines[start..end].iter().copied().collect();
+        
+        let mut visible_lines_vec: Vec<Line> = lines[start..end].to_vec();
         
         // Add scroll indicators
-        let mut result = visible_text.join("\n");
         if start > 0 {
-            result = format!("▲ (scroll: line {}/{})\n{}", start + 1, total_lines, result);
+            visible_lines_vec.insert(0, Line::from(
+                Span::styled(
+                    format!("▲ (scroll: line {}/{})  ", start + 1, total_lines),
+                    Style::default().fg(Color::DarkGray)
+                )
+            ));
         }
         if end < total_lines {
-            result = format!("{}\n▼ (more below)", result);
+            visible_lines_vec.push(Line::from(
+                Span::styled(
+                    "▼ (more below)",
+                    Style::default().fg(Color::DarkGray)
+                )
+            ));
         }
         
-        result
-    };
+        let editor = Paragraph::new(visible_lines_vec)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("SQL Query Editor (Ctrl+Enter or F5 to execute)")
+                    .border_style(Style::default().fg(Color::Cyan)),
+            )
+            .wrap(Wrap { trim: false });
+        
+        f.render_widget(editor, area);
+    }
+    
+    // Render autocomplete popup if active
+    if app.show_autocomplete && !app.suggestions.is_empty() {
+        render_autocomplete_popup(f, app, area);
+    }
+}
 
-    let editor = Paragraph::new(text)
-        .style(Style::default().fg(Color::White))
+fn render_autocomplete_popup(f: &mut Frame, app: &App, editor_area: Rect) {
+    use crate::autocomplete::SuggestionType;
+    
+    // Calculate popup position (below the first few lines of editor)
+    let popup_height = (app.suggestions.len() as u16 + 2).min(12); // Max 10 suggestions + 2 for borders
+    let popup_width = 40;
+    
+    // Position popup in the editor area
+    let popup_x = editor_area.x + 2;
+    let popup_y = (editor_area.y + 3).min(editor_area.bottom().saturating_sub(popup_height));
+    
+    let popup_area = Rect {
+        x: popup_x,
+        y: popup_y,
+        width: popup_width.min(editor_area.width.saturating_sub(4)),
+        height: popup_height,
+    };
+    
+    // Build suggestion list
+    let suggestions_text: Vec<String> = app.suggestions.iter().enumerate().map(|(idx, suggestion)| {
+        let icon = match suggestion.suggestion_type {
+            SuggestionType::Keyword => "K",
+            SuggestionType::Table => "T",
+            SuggestionType::Column => "C",
+            SuggestionType::Function => "F",
+        };
+        
+        let marker = if idx == app.suggestion_selected { "» " } else { "  " };
+        format!("{}{} {}", marker, icon, suggestion.text)
+    }).collect();
+    
+    let text_content = suggestions_text.join("\n");
+    
+    let popup = Paragraph::new(text_content)
+        .style(Style::default().fg(Color::White).bg(Color::Black))
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("SQL Query Editor (Ctrl+Enter or F5 to execute)")
-                .border_style(Style::default().fg(Color::Cyan)),
-        )
-        .wrap(Wrap { trim: false });
-
-    f.render_widget(editor, area);
+                .title("Suggestions")
+                .border_style(Style::default().fg(Color::Yellow)),
+        );
+    
+    // Clear the area first to ensure overlay effect
+    f.render_widget(ratatui::widgets::Clear, popup_area);
+    f.render_widget(popup, popup_area);
 }
 
 fn render_query_results(f: &mut Frame, app: &App, area: Rect) {

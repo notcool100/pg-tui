@@ -11,9 +11,12 @@ use ratatui::{
 use std::io;
 
 mod app;
+mod autocomplete;
 mod config;
 mod db;
 mod events;
+mod formatter;
+mod syntax;
 mod ui;
 
 use app::{App, AppMode};
@@ -86,6 +89,11 @@ async fn run_app<B: ratatui::backend::Backend>(
                                         app.handle_results_filter_input(key.code);
                                     }
                                 }
+                            // Check for Alt+Shift+F to format query
+                            } else if key.modifiers.contains(KeyModifiers::ALT) 
+                                && key.modifiers.contains(KeyModifiers::SHIFT) 
+                                && key.code == KeyCode::Char('F') {
+                                app.format_current_query();
                             // Check for Ctrl+F to activate filter
                             } else if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('f') {
                                 if app.query_result.is_some() {
@@ -234,14 +242,42 @@ async fn handle_browser_input(app: &mut App, key: KeyCode) -> Result<bool> {
 }
 
 async fn handle_query_input(app: &mut App, key: KeyCode) -> Result<bool> {
+    // Handle autocomplete navigation if visible
+    if app.show_autocomplete {
+        match key {
+            KeyCode::Down => {
+                app.select_next_suggestion();
+                return Ok(false);
+            }
+            KeyCode::Up => {
+                app.select_prev_suggestion();
+                return Ok(false);
+            }
+            KeyCode::Tab => {
+                app.accept_suggestion();
+                app.update_autocomplete().await?;
+                return Ok(false);
+            }
+            KeyCode::Esc => {
+                app.hide_autocomplete();
+                return Ok(false);
+            }
+            _ => {
+                // Continue to normal input handling which will update autocomplete
+            }
+        }
+    }
+    
     match key {
         KeyCode::Char('q') if app.query_input.is_empty() => return Ok(true),
-        KeyCode::Tab => app.mode = AppMode::Browser,
+        KeyCode::Tab if !app.show_autocomplete => app.mode = AppMode::Browser,
         _ => {
             // Handle text input in query editor
             app.handle_query_input(key);
             // Auto-scroll to keep cursor visible (10 height - 2 for borders = 8 visible lines)
             app.adjust_query_scroll(8);
+            // Update autocomplete suggestions (may load schema on first call)
+            app.update_autocomplete().await?;
         }
     }
     Ok(false)

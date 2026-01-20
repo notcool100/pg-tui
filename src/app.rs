@@ -2,6 +2,7 @@ use anyhow::Result;
 use crossterm::event::KeyCode;
 use std::collections::HashSet;
 
+use crate::autocomplete::{AutocompleteEngine, Suggestion};
 use crate::db::{Column, Constraint, DbConnection, ForeignKey, Index, QueryResult, Schema, Table, Trigger};
 
 mod connection_selector;
@@ -104,6 +105,13 @@ pub struct App {
     
     // Expanded items tracking
     pub expanded_items: HashSet<String>,
+    
+    // Autocomplete
+    pub autocomplete_engine: AutocompleteEngine,
+    pub suggestions: Vec<Suggestion>,
+    pub suggestion_selected: usize,
+    pub show_autocomplete: bool,
+    pub autocomplete_schema_loaded: bool,
 }
 
 impl App {
@@ -147,6 +155,11 @@ impl App {
             results_filter_input: String::new(),
             results_filter_active: false,
             expanded_items: HashSet::new(),
+            autocomplete_engine: AutocompleteEngine::new(),
+            suggestions: Vec::new(),
+            suggestion_selected: 0,
+            show_autocomplete: false,
+            autocomplete_schema_loaded: false,
         }
     }
 
@@ -529,9 +542,11 @@ impl App {
 
     pub async fn execute_query(&mut self) -> Result<()> {
         if let Some(client) = self.db.client() {
-            let sql = self.query_input.trim();
-            if !sql.is_empty() {
-                match crate::db::execute_query(client, sql).await {
+            // Extract the query at cursor position (DBeaver-like behavior)
+            let sql = self.extract_current_query();
+            
+            if !sql.trim().is_empty() {
+                match crate::db::execute_query(client, &sql).await {
                     Ok(result) => {
                         self.query_result = Some(result);
                         self.clear_error();
@@ -543,6 +558,46 @@ impl App {
             }
         }
         Ok(())
+    }
+    
+    fn extract_current_query(&self) -> String {
+        // If input is empty, return empty
+        if self.query_input.is_empty() {
+            return String::new();
+        }
+        
+        // Find all semicolon positions
+        let semicolons: Vec<usize> = self.query_input
+            .char_indices()
+            .filter_map(|(i, c)| if c == ';' { Some(i) } else { None })
+            .collect();
+        
+        // If no semicolons, return the entire input
+        if semicolons.is_empty() {
+            return self.query_input.trim().to_string();
+        }
+        
+        // Find which query the cursor is in
+        let cursor_pos = self.query_cursor;
+        
+        // Find the start of current query (after previous semicolon or beginning)
+        let query_start = semicolons
+            .iter()
+            .rev()
+            .find(|&&pos| pos < cursor_pos)
+            .map(|&pos| pos + 1) // Start after the semicolon
+            .unwrap_or(0); // Or from the beginning
+        
+        // Find the end of current query (at next semicolon or end)
+        let query_end = semicolons
+            .iter()
+            .find(|&&pos| pos >= cursor_pos)
+            .copied()
+            .unwrap_or(self.query_input.len()); // Or to the end
+        
+        // Extract the query
+        let query = &self.query_input[query_start..query_end];
+        query.trim().to_string()
     }
 
     // Results filter methods
@@ -673,6 +728,167 @@ impl App {
             TableDetailTab::ForeignKeys => TableDetailTab::Triggers,
         };
     }
+    
+    // Autocomplete methods
+    pub async fn update_autocomplete(&mut self) -> Result<()> {
+        // Lazy load schema on first use
+        if !self.autocomplete_schema_loaded {
+            if let Some(client) = self.db.client() {
+                let mut tables_with_columns = Vec::new();
+                
+                for schema in &self.schemas {
+                    let tables = crate::db::list_tables(client, &schema.name).await?;
+                    
+                    for table in tables {
+                        let columns = crate::db::describe_table(client, &schema.name, &table.name).await?;
+                        let column_names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
+                        tables_with_columns.push((table.name.clone(), column_names));
+                    }
+                }
+                
+                self.autocomplete_engine.update_schema(tables_with_columns);
+                self.autocomplete_schema_loaded = true;
+            }
+        }
+        
+        self.suggestions = self.autocomplete_engine.get_suggestions(&self.query_input, self.query_cursor);
+        self.show_autocomplete = !self.suggestions.is_empty();
+        self.suggestion_selected = 0;
+        Ok(())
+    }
+    
+    pub fn select_next_suggestion(&mut self) {
+        if !self.suggestions.is_empty() {
+            self.suggestion_selected = (self.suggestion_selected + 1) % self.suggestions.len();
+        }
+    }
+    
+    pub fn select_prev_suggestion(&mut self) {
+        if !self.suggestions.is_empty() {
+            if self.suggestion_selected == 0 {
+                self.suggestion_selected = self.suggestions.len() - 1;
+            } else {
+                self.suggestion_selected -= 1;
+            }
+        }
+    }
+    
+    pub fn accept_suggestion(&mut self) {
+        if self.suggestion_selected < self.suggestions.len() {
+            let suggestion = &self.suggestions[self.suggestion_selected];
+            
+            // Find the start of the current word being typed
+            let mut word_start = self.query_cursor;
+            let chars: Vec<char> = self.query_input.chars().collect();
+            
+            while word_start > 0 {
+                let prev_char = chars[word_start - 1];
+                if prev_char.is_alphanumeric() || prev_char == '_' {
+                    word_start -= 1;
+                } else {
+                    break;
+                }
+            }
+            
+            // Remove the partial word
+            self.query_input.drain(word_start..self.query_cursor);
+            
+            // Insert the suggestion
+            let insert_text = suggestion.text.clone();
+            for (i, c) in insert_text.chars().enumerate() {
+                self.query_input.insert(word_start + i, c);
+            }
+            
+            // Move cursor to end of inserted text
+            self.query_cursor = word_start + insert_text.len();
+            
+            // Add a space after keywords
+            if matches!(suggestion.suggestion_type, crate::autocomplete::SuggestionType::Keyword) {
+                self.query_input.insert(self.query_cursor, ' ');
+                self.query_cursor += 1;
+            }
+            
+            // Hide autocomplete
+            self.show_autocomplete = false;
+            self.suggestions.clear();
+        }
+    }
+    
+    pub fn hide_autocomplete(&mut self) {
+        self.show_autocomplete = false;
+        self.suggestions.clear();
+        self.suggestion_selected = 0;
+    }
+    
+    // Query formatting
+    pub fn format_current_query(&mut self) {
+        use crate::formatter::SqlFormatter;
+        
+        if self.query_input.is_empty() {
+            return;
+        }
+        
+        // Find all semicolon positions
+        let semicolons: Vec<usize> = self.query_input
+            .char_indices()
+            .filter_map(|(i, c)| if c == ';' { Some(i) } else { None })
+            .collect();
+        
+        // If no semicolons, format the entire input
+        if semicolons.is_empty() {
+            let formatter = SqlFormatter::new();
+            let formatted = formatter.format(&self.query_input);
+            self.query_cursor = formatted.len(); // Move cursor to end
+            self.query_input = formatted;
+            return;
+        }
+        
+        // Find which query the cursor is in
+        let cursor_pos = self.query_cursor;
+        
+        // Find the start of current query (after previous semicolon or beginning)
+        let query_start = semicolons
+            .iter()
+            .rev()
+            .find(|&&pos| pos < cursor_pos)
+            .map(|&pos| pos + 1)
+            .unwrap_or(0);
+        
+        // Find the end of current query (at next semicolon or end)
+        let query_end = semicolons
+            .iter()
+            .find(|&&pos| pos >= cursor_pos)
+            .copied()
+            .unwrap_or(self.query_input.len());
+        
+        // Extract the query
+        let query = &self.query_input[query_start..query_end];
+        
+        // Format it
+        let formatter = SqlFormatter::new();
+        let formatted = formatter.format(query.trim());
+        
+        // Replace in the original input
+        let mut new_input = String::new();
+        
+        // Add everything before the query
+        new_input.push_str(&self.query_input[..query_start]);
+        
+        // Add formatted query
+        if query_start > 0 {
+            new_input.push('\n');
+        }
+        new_input.push_str(&formatted);
+        
+        // Add everything after the query
+        if query_end < self.query_input.len() {
+            new_input.push_str(&self.query_input[query_end..]);
+        }
+        
+        // Update cursor to end of formatted query
+        self.query_cursor = query_start + formatted.len() + if query_start > 0 { 1 } else { 0 };
+        self.query_input = new_input;
+    }
 }
 
 impl Default for App {
@@ -680,3 +896,4 @@ impl Default for App {
         Self::new()
     }
 }
+
