@@ -59,7 +59,15 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 }
             }
             AppMode::ConnectionEdit => format!(" {} | Tab:next field | Enter:connect | Esc:back | q:quit ", mode_text),
-            AppMode::Browser => format!(" {} | ↑↓:navigate | Enter:expand | Tab:query mode | r:refresh | q:quit ", mode_text),
+            AppMode::Browser => {
+                if app.filter_active {
+                    format!(" {} | FILTER MODE | Esc:clear filter | ↑↓:navigate | Enter:select | q:quit ", mode_text)
+                } else if app.selected_table.is_some() {
+                    format!(" {} | ←→:[/]:switch tabs | /:filter | ↑↓:navigate | Enter:expand | Tab:query mode | r:refresh | q:quit ", mode_text)
+                } else {
+                    format!(" {} | /:filter | ↑↓:navigate | Enter:expand | Tab:query mode | r:refresh | q:quit ", mode_text)
+                }
+            }
             AppMode::Query => format!(" {} | Ctrl+Enter/F5:execute | Tab:browser mode | q:quit ", mode_text),
         }
     };

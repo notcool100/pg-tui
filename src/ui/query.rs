@@ -8,42 +8,176 @@ use ratatui::{
 use crate::app::App;
 
 pub fn render_query(f: &mut Frame, app: &App, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(10), Constraint::Min(0)])
-        .split(area);
+    // Only show results panel if there are actual results
+    if app.query_result.is_some() {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(10), Constraint::Min(0)])
+            .split(area);
 
-    // Query editor
-    render_query_editor(f, app, chunks[0]);
+        // Query editor
+        render_query_editor(f, app, chunks[0]);
 
-    // Results
-    render_query_results(f, app, chunks[1]);
+        // Results
+        render_query_results(f, app, chunks[1]);
+    } else {
+        // No results yet - give full space to editor
+        render_query_editor(f, app, area);
+    }
 }
 
 fn render_query_editor(f: &mut Frame, app: &App, area: Rect) {
+    use ratatui::text::{Line, Span};
+    use crate::syntax::SqlHighlighter;
+    
     let help_text = if app.query_input.is_empty() {
         "\n  Type your SQL query here\n  Press Ctrl+Enter or F5 to execute\n  Tab to switch to browser mode"
     } else {
         ""
     };
 
-    let text = if app.query_input.is_empty() {
-        help_text.to_string()
+    if app.query_input.is_empty() {
+        // Show help text
+        let editor = Paragraph::new(help_text)
+            .style(Style::default().fg(Color::DarkGray))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("SQL Query Editor (Ctrl+Enter or F5 to execute)")
+                    .border_style(Style::default().fg(Color::Cyan)),
+            )
+            .wrap(Wrap { trim: false });
+        
+        f.render_widget(editor, area);
     } else {
-        app.query_input.clone()
-    };
+        // Apply syntax highlighting
+        let highlighter = SqlHighlighter::new();
+        
+        // Insert cursor marker
+        let mut display_text = app.query_input.clone();
+        let cursor_pos = app.query_cursor.min(display_text.len());
+        display_text.insert(cursor_pos, '█');
+        
+        // Tokenize with syntax highlighting
+        let tokens = highlighter.tokenize(&display_text);
+        
+        // Build styled lines
+        let mut current_line_spans: Vec<Span> = Vec::new();
+        let mut lines: Vec<Line> = Vec::new();
+        
+        for token in tokens {
+            // Check if token contains newlines
+            if token.text.contains('\n') {
+                let parts: Vec<&str> = token.text.split('\n').collect();
+                for (i, part) in parts.iter().enumerate() {
+                    if !part.is_empty() {
+                        current_line_spans.push(Span::styled(part.to_string(), token.style()));
+                    }
+                    if i < parts.len() - 1 {
+                        // End of line
+                        lines.push(Line::from(current_line_spans.clone()));
+                        current_line_spans.clear();
+                    }
+                }
+            } else {
+                current_line_spans.push(Span::styled(token.text.clone(), token.style()));
+            }
+        }
+        
+        // Add remaining spans as last line
+        if !current_line_spans.is_empty() {
+            lines.push(Line::from(current_line_spans));
+        }
+        
+        // Handle scrolling
+        let total_lines = lines.len();
+        let visible_lines = (area.height.saturating_sub(2)) as usize;
+        let start = app.query_scroll_offset;
+        let end = (start + visible_lines).min(total_lines);
+        
+        let mut visible_lines_vec: Vec<Line> = lines[start..end].to_vec();
+        
+        // Add scroll indicators
+        if start > 0 {
+            visible_lines_vec.insert(0, Line::from(
+                Span::styled(
+                    format!("▲ (scroll: line {}/{})  ", start + 1, total_lines),
+                    Style::default().fg(Color::DarkGray)
+                )
+            ));
+        }
+        if end < total_lines {
+            visible_lines_vec.push(Line::from(
+                Span::styled(
+                    "▼ (more below)",
+                    Style::default().fg(Color::DarkGray)
+                )
+            ));
+        }
+        
+        let editor = Paragraph::new(visible_lines_vec)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("SQL Query Editor (Ctrl+Enter or F5 to execute)")
+                    .border_style(Style::default().fg(Color::Cyan)),
+            )
+            .wrap(Wrap { trim: false });
+        
+        f.render_widget(editor, area);
+    }
+    
+    // Render autocomplete popup if active
+    if app.show_autocomplete && !app.suggestions.is_empty() {
+        render_autocomplete_popup(f, app, area);
+    }
+}
 
-    let editor = Paragraph::new(text)
-        .style(Style::default().fg(Color::White))
+fn render_autocomplete_popup(f: &mut Frame, app: &App, editor_area: Rect) {
+    use crate::autocomplete::SuggestionType;
+    
+    // Calculate popup position (below the first few lines of editor)
+    let popup_height = (app.suggestions.len() as u16 + 2).min(12); // Max 10 suggestions + 2 for borders
+    let popup_width = 40;
+    
+    // Position popup in the editor area
+    let popup_x = editor_area.x + 2;
+    let popup_y = (editor_area.y + 3).min(editor_area.bottom().saturating_sub(popup_height));
+    
+    let popup_area = Rect {
+        x: popup_x,
+        y: popup_y,
+        width: popup_width.min(editor_area.width.saturating_sub(4)),
+        height: popup_height,
+    };
+    
+    // Build suggestion list
+    let suggestions_text: Vec<String> = app.suggestions.iter().enumerate().map(|(idx, suggestion)| {
+        let icon = match suggestion.suggestion_type {
+            SuggestionType::Keyword => "K",
+            SuggestionType::Table => "T",
+            SuggestionType::Column => "C",
+            SuggestionType::Function => "F",
+        };
+        
+        let marker = if idx == app.suggestion_selected { "» " } else { "  " };
+        format!("{}{} {}", marker, icon, suggestion.text)
+    }).collect();
+    
+    let text_content = suggestions_text.join("\n");
+    
+    let popup = Paragraph::new(text_content)
+        .style(Style::default().fg(Color::White).bg(Color::Black))
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("SQL Query Editor (Ctrl+Enter or F5 to execute)")
-                .border_style(Style::default().fg(Color::Cyan)),
-        )
-        .wrap(Wrap { trim: false });
-
-    f.render_widget(editor, area);
+                .title("Suggestions")
+                .border_style(Style::default().fg(Color::Yellow)),
+        );
+    
+    // Clear the area first to ensure overlay effect
+    f.render_widget(ratatui::widgets::Clear, popup_area);
+    f.render_widget(popup, popup_area);
 }
 
 fn render_query_results(f: &mut Frame, app: &App, area: Rect) {
@@ -61,23 +195,132 @@ fn render_query_results(f: &mut Frame, app: &App, area: Rect) {
             return;
         }
 
-        // Create table header
-        let header = Row::new(result.columns.clone())
+        // Split area for filter input if active
+        let (filter_area, table_area) = if app.results_filter_active {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(3), Constraint::Min(0)])
+                .split(area);
+            (Some(chunks[0]), chunks[1])
+        } else {
+            (None, area)
+        };
+
+        // Render filter input if active
+        if let Some(filter_area) = filter_area {
+            let filter_text = if app.results_filter_input.is_empty() {
+                "Type to filter rows... (ESC to clear)".to_string()
+            } else {
+                app.results_filter_input.clone()
+            };
+            
+            let filter_widget = Paragraph::new(filter_text)
+                .style(Style::default().fg(Color::Yellow))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("Filter")
+                        .border_style(Style::default().fg(Color::Yellow)),
+                );
+            f.render_widget(filter_widget, filter_area);
+        }
+
+        // Get filtered row indices if filtering is active
+        let filtered_indices = app.get_filtered_rows();
+        let rows_to_display: Vec<&Vec<String>> = if let Some(indices) = &filtered_indices {
+            indices.iter().map(|&idx| &result.rows[idx]).collect()
+        } else {
+            result.rows.iter().collect()
+        };
+
+        // Calculate optimal column widths based on content
+        let mut col_widths: Vec<usize> = Vec::new();
+        for (col_idx, col_name) in result.columns.iter().enumerate() {
+            let mut max_width = col_name.len();
+            // Check first 10 displayed rows to determine width
+            for row in rows_to_display.iter().take(10) {
+                if let Some(cell) = row.get(col_idx) {
+                    max_width = max_width.max(cell.len());
+                }
+            }
+            // Limit individual column width to 30 characters
+            col_widths.push(max_width.min(30));
+        }
+        
+        // Calculate visible columns based on scroll offset and available width
+        let available_width = table_area.width.saturating_sub(4) as usize; // subtract borders and padding
+        let mut visible_cols: Vec<usize> = Vec::new();
+        let mut used_width = 0;
+        let scroll_offset = app.result_scroll_offset;
+        
+        // Start from scroll offset and add columns until width is full
+        for col_idx in scroll_offset..result.columns.len() {
+            let col_width = col_widths[col_idx] + 3; // Add padding
+            if used_width + col_width <= available_width || visible_cols.is_empty() {
+                visible_cols.push(col_idx);
+                used_width += col_width;
+            } else {
+                break;
+            }
+        }
+        
+        // Build title with scroll indicators and filter info
+        let total_cols = result.columns.len();
+        let displayed_rows = rows_to_display.len();
+        let total_rows = result.row_count;
+        
+        let filter_info = if filtered_indices.is_some() {
+            format!(" [filtered: {}/{}]", displayed_rows, total_rows)
+        } else {
+            format!(" ({} rows)", total_rows)
+        };
+        
+        let title = if scroll_offset > 0 && scroll_offset + visible_cols.len() < total_cols {
+            format!("Results{} ◄ cols {}-{}/{} ►", 
+                filter_info,
+                scroll_offset + 1, 
+                scroll_offset + visible_cols.len(),
+                total_cols)
+        } else if scroll_offset > 0 {
+            format!("Results{} ◄ cols {}-{}/{}", 
+                filter_info,
+                scroll_offset + 1, 
+                total_cols,
+                total_cols)
+        } else if scroll_offset + visible_cols.len() < total_cols {
+            format!("Results{} cols 1-{}/{} ►", 
+                filter_info,
+                visible_cols.len(),
+                total_cols)
+        } else {
+            format!("Results{}", filter_info)
+        };
+        
+        // Create header with only visible columns
+        let header_cells: Vec<String> = visible_cols.iter()
+            .map(|&idx| result.columns[idx].clone())
+            .collect();
+        let header = Row::new(header_cells)
             .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
             .bottom_margin(1);
 
-        // Create table rows
-        let rows: Vec<Row> = result
-            .rows
+        // Create table rows with only visible columns from filtered rows
+        let rows: Vec<Row> = rows_to_display
             .iter()
-            .map(|row| Row::new(row.clone()))
+            .map(|row| {
+                let cells: Vec<String> = visible_cols.iter()
+                    .map(|&idx| row.get(idx).cloned().unwrap_or_else(|| "".to_string()))
+                    .collect();
+                Row::new(cells)
+            })
             .collect();
 
-        // Calculate column widths
-        let col_count = result.columns.len();
-        let col_width = 100 / col_count as u16;
-        let constraints: Vec<Constraint> = (0..col_count)
-            .map(|_| Constraint::Percentage(col_width))
+        // Calculate constraints for visible columns
+        let constraints: Vec<Constraint> = visible_cols.iter()
+            .map(|&idx| {
+                let width = col_widths[idx];
+                Constraint::Length(width as u16 + 3)
+            })
             .collect();
 
         let table = Table::new(rows, constraints)
@@ -85,11 +328,11 @@ fn render_query_results(f: &mut Frame, app: &App, area: Rect) {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(format!("Results ({} rows)", result.row_count))
+                    .title(title)
                     .border_style(Style::default().fg(Color::Cyan)),
             );
 
-        f.render_widget(table, area);
+        f.render_widget(table, table_area);
     } else {
         let help = Paragraph::new("No query results yet.\n\nWrite a SQL query above and press !e to execute.")
             .style(Style::default().fg(Color::DarkGray))
