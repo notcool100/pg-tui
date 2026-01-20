@@ -193,6 +193,17 @@ async fn handle_browser_input(app: &mut App, key: KeyCode) -> Result<bool> {
         KeyCode::Enter => app.browser_select().await?,
         KeyCode::Tab => app.mode = AppMode::Query,
         KeyCode::Char('r') => app.refresh_browser().await?,
+        // Tab navigation (only when table is selected)
+        KeyCode::Left | KeyCode::Char('[') => {
+            if app.selected_table.is_some() {
+                app.prev_tab();
+            }
+        }
+        KeyCode::Right | KeyCode::Char(']') => {
+            if app.selected_table.is_some() {
+                app.next_tab();
+            }
+        }
         _ => {}
     }
     Ok(false)

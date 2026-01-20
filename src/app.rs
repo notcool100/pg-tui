@@ -2,7 +2,7 @@ use anyhow::Result;
 use crossterm::event::KeyCode;
 use std::collections::HashSet;
 
-use crate::db::{Column, DbConnection, QueryResult, Schema, Table};
+use crate::db::{Column, Constraint, DbConnection, ForeignKey, Index, QueryResult, Schema, Table, Trigger};
 
 mod connection_selector;
 
@@ -28,6 +28,15 @@ pub enum FolderType {
     Tables,
     Views,
     Functions,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableDetailTab {
+    Columns,
+    Constraints,
+    Indexes,
+    Triggers,
+    ForeignKeys,
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +75,14 @@ pub struct App {
     pub browser_items: Vec<BrowserItem>,
     pub browser_selected: usize,
     pub browser_scroll_offset: usize,
+    
+    // Table details tab state
+    pub table_detail_tab: TableDetailTab,
+    pub selected_table: Option<(String, String)>, // (schema, table_name)
+    pub constraints: Vec<Constraint>,
+    pub indexes: Vec<Index>,
+    pub triggers: Vec<Trigger>,
+    pub foreign_keys: Vec<ForeignKey>,
     
     // Query state
     pub query_input: String,
@@ -107,6 +124,12 @@ impl App {
             browser_items: Vec::new(),
             browser_selected: 0,
             browser_scroll_offset: 0,
+            table_detail_tab: TableDetailTab::Columns,
+            selected_table: None,
+            constraints: Vec::new(),
+            indexes: Vec::new(),
+            triggers: Vec::new(),
+            foreign_keys: Vec::new(),
             query_input: String::new(),
             query_result: None,
             query_cursor: 0,
@@ -316,15 +339,32 @@ impl App {
                     }
                 }
                 BrowserItem::Table(schema, table) => {
+                    self.selected_table = Some((schema.clone(), table.clone()));
+                    self.table_detail_tab = TableDetailTab::Columns;
                     self.columns = crate::db::describe_table(client, schema, table).await?;
+                    self.constraints = crate::db::list_table_constraints(client, schema, table).await?;
+                    self.indexes = crate::db::list_table_indexes(client, schema, table).await?;
+                    self.triggers = crate::db::list_table_triggers(client, schema, table).await?;
+                    self.foreign_keys = crate::db::list_table_foreign_keys(client, schema, table).await?;
                 }
                 BrowserItem::View(schema, view) => {
+                    self.selected_table = Some((schema.clone(), view.clone()));
+                    self.table_detail_tab = TableDetailTab::Columns;
                     self.columns = crate::db::describe_table(client, schema, view).await?;
+                    // Views don't have constraints, indexes, triggers, or foreign keys
+                    self.constraints.clear();
+                    self.indexes.clear();
+                    self.triggers.clear();
+                    self.foreign_keys.clear();
                 }
                 BrowserItem::Function(_schema, _function) => {
+                    self.selected_table = None;
                     // For now, just show a message that function details aren't implemented yet
-                    // In the future, we could show function parameters and return type
                     self.columns.clear();
+                    self.constraints.clear();
+                    self.indexes.clear();
+                    self.triggers.clear();
+                    self.foreign_keys.clear();
                 }
             }
         }
@@ -524,6 +564,27 @@ impl App {
         }
 
         filtered
+    }
+
+    // Tab navigation
+    pub fn next_tab(&mut self) {
+        self.table_detail_tab = match self.table_detail_tab {
+            TableDetailTab::Columns => TableDetailTab::Constraints,
+            TableDetailTab::Constraints => TableDetailTab::Indexes,
+            TableDetailTab::Indexes => TableDetailTab::Triggers,
+            TableDetailTab::Triggers => TableDetailTab::ForeignKeys,
+            TableDetailTab::ForeignKeys => TableDetailTab::Columns,
+        };
+    }
+
+    pub fn prev_tab(&mut self) {
+        self.table_detail_tab = match self.table_detail_tab {
+            TableDetailTab::Columns => TableDetailTab::ForeignKeys,
+            TableDetailTab::Constraints => TableDetailTab::Columns,
+            TableDetailTab::Indexes => TableDetailTab::Constraints,
+            TableDetailTab::Triggers => TableDetailTab::Indexes,
+            TableDetailTab::ForeignKeys => TableDetailTab::Triggers,
+        };
     }
 }
 

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use tokio_postgres::Client;
 
-use super::{Column, Database, Function, QueryResult, Schema, Table, View};
+use super::{Column, Constraint, Database, ForeignKey, Function, Index, QueryResult, Schema, Table, Trigger, View};
 
 pub async fn list_databases(client: &Client) -> Result<Vec<Database>> {
     let rows = client
@@ -185,4 +185,139 @@ pub async fn execute_query(client: &Client, sql: &str) -> Result<QueryResult> {
         rows: data_rows,
         row_count,
     })
+}
+
+pub async fn list_table_constraints(client: &Client, schema: &str, table: &str) -> Result<Vec<Constraint>> {
+    let rows = client
+        .query(
+            "SELECT 
+                tc.constraint_name,
+                tc.constraint_type,
+                string_agg(kcu.column_name, ', ' ORDER BY kcu.ordinal_position) as column_names
+             FROM information_schema.table_constraints tc
+             LEFT JOIN information_schema.key_column_usage kcu 
+                ON tc.constraint_name = kcu.constraint_name 
+                AND tc.table_schema = kcu.table_schema
+             WHERE tc.table_schema = $1 AND tc.table_name = $2
+             GROUP BY tc.constraint_name, tc.constraint_type
+             ORDER BY tc.constraint_type, tc.constraint_name",
+            &[&schema, &table],
+        )
+        .await
+        .context("Failed to list table constraints")?;
+
+    let constraints = rows
+        .iter()
+        .map(|row| Constraint {
+            name: row.get(0),
+            constraint_type: row.get(1),
+            column_names: row.get::<_, Option<String>>(2).unwrap_or_else(|| "-".to_string()),
+        })
+        .collect();
+
+    Ok(constraints)
+}
+
+pub async fn list_table_indexes(client: &Client, schema: &str, table: &str) -> Result<Vec<Index>> {
+    let rows = client
+        .query(
+            "SELECT 
+                i.indexname as name,
+                string_agg(a.attname, ', ' ORDER BY array_position(ix.indkey, a.attnum)) as columns,
+                ix.indisunique as is_unique,
+                ix.indisprimary as is_primary
+             FROM pg_indexes i
+             JOIN pg_class c ON c.relname = i.indexname
+             JOIN pg_index ix ON ix.indexrelid = c.oid
+             JOIN pg_class t ON t.oid = ix.indrelid
+             JOIN pg_attribute a ON a.attrelid = t.oid
+             WHERE i.schemaname = $1 
+                AND i.tablename = $2
+                AND a.attnum = ANY(ix.indkey)
+             GROUP BY i.indexname, ix.indisunique, ix.indisprimary
+             ORDER BY i.indexname",
+            &[&schema, &table],
+        )
+        .await
+        .context("Failed to list table indexes")?;
+
+    let indexes = rows
+        .iter()
+        .map(|row| Index {
+            name: row.get(0),
+            columns: row.get::<_, Option<String>>(1).unwrap_or_else(|| "-".to_string()),
+            is_unique: row.get(2),
+            is_primary: row.get(3),
+        })
+        .collect();
+
+    Ok(indexes)
+}
+
+pub async fn list_table_triggers(client: &Client, schema: &str, table: &str) -> Result<Vec<Trigger>> {
+    let rows = client
+        .query(
+            "SELECT 
+                trigger_name,
+                string_agg(DISTINCT event_manipulation, ', ' ORDER BY event_manipulation) as event,
+                action_timing,
+                action_statement
+             FROM information_schema.triggers
+             WHERE event_object_schema = $1 AND event_object_table = $2
+             GROUP BY trigger_name, action_timing, action_statement
+             ORDER BY trigger_name",
+            &[&schema, &table],
+        )
+        .await
+        .context("Failed to list table triggers")?;
+
+    let triggers = rows
+        .iter()
+        .map(|row| Trigger {
+            name: row.get(0),
+            event: row.get::<_, Option<String>>(1).unwrap_or_else(|| "-".to_string()),
+            timing: row.get(2),
+            action_statement: row.get(3),
+        })
+        .collect();
+
+    Ok(triggers)
+}
+
+pub async fn list_table_foreign_keys(client: &Client, schema: &str, table: &str) -> Result<Vec<ForeignKey>> {
+    let rows = client
+        .query(
+            "SELECT 
+                tc.constraint_name as name,
+                string_agg(DISTINCT kcu.column_name, ', ' ORDER BY kcu.column_name) as column_names,
+                ccu.table_name as referenced_table,
+                string_agg(DISTINCT ccu.column_name, ', ' ORDER BY ccu.column_name) as referenced_columns
+             FROM information_schema.table_constraints tc
+             JOIN information_schema.key_column_usage kcu 
+                ON tc.constraint_name = kcu.constraint_name 
+                AND tc.table_schema = kcu.table_schema
+             JOIN information_schema.constraint_column_usage ccu 
+                ON ccu.constraint_name = tc.constraint_name 
+                AND ccu.table_schema = tc.table_schema
+             WHERE tc.constraint_type = 'FOREIGN KEY' 
+                AND tc.table_schema = $1 
+                AND tc.table_name = $2
+             GROUP BY tc.constraint_name, ccu.table_name
+             ORDER BY tc.constraint_name",
+            &[&schema, &table],
+        )
+        .await
+        .context("Failed to list table foreign keys")?;
+
+    let foreign_keys = rows
+        .iter()
+        .map(|row| ForeignKey {
+            name: row.get(0),
+            column_names: row.get::<_, Option<String>>(1).unwrap_or_else(|| "-".to_string()),
+            referenced_table: row.get(2),
+            referenced_columns: row.get::<_, Option<String>>(3).unwrap_or_else(|| "-".to_string()),
+        })
+        .collect();
+
+    Ok(foreign_keys)
 }
