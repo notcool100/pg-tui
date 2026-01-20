@@ -31,6 +31,19 @@ pub struct Column {
 }
 
 #[derive(Debug, Clone)]
+pub struct View {
+    pub schema: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct Function {
+    pub schema: String,
+    pub name: String,
+    pub function_type: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct QueryResult {
     pub columns: Vec<String>,
     pub rows: Vec<Vec<String>>,

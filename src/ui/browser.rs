@@ -63,7 +63,18 @@ pub fn render_browser(f: &mut Frame, app: &mut App, area: Rect) {
             let item = &app.browser_items[idx];
             let (icon, name, indent) = match item {
                 BrowserItem::Schema(name) => ("📁", name.as_str(), 0),
-                BrowserItem::Table(_, name) => ("📊", name.as_str(), 2),
+                BrowserItem::Folder(_, folder_type) => {
+                    use crate::app::FolderType;
+                    let folder_name = match folder_type {
+                        FolderType::Tables => "Tables",
+                        FolderType::Views => "Views",
+                        FolderType::Functions => "Functions",
+                    };
+                    ("📂", folder_name, 2)
+                }
+                BrowserItem::Table(_, name) => ("📊", name.as_str(), 4),
+                BrowserItem::View(_, name) => ("👁️", name.as_str(), 4),
+                BrowserItem::Function(_, name) => ("⚙️", name.as_str(), 4),
             };
 
             let indent_str = " ".repeat(indent);

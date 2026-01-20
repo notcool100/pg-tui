@@ -1,5 +1,6 @@
 use anyhow::Result;
 use crossterm::event::KeyCode;
+use std::collections::HashSet;
 
 use crate::db::{Column, DbConnection, QueryResult, Schema, Table};
 
@@ -22,10 +23,20 @@ pub enum ConnectionField {
     Password,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FolderType {
+    Tables,
+    Views,
+    Functions,
+}
+
 #[derive(Debug, Clone)]
 pub enum BrowserItem {
     Schema(String),
-    Table(String, String), // schema, table
+    Folder(String, FolderType), // schema, folder_type
+    Table(String, String),      // schema, table_name
+    View(String, String),       // schema, view_name
+    Function(String, String),   // schema, function_name
 }
 
 pub struct App {
@@ -67,6 +78,9 @@ pub struct App {
     // Filter state
     pub filter_input: String,
     pub filter_active: bool,
+    
+    // Expanded items tracking
+    pub expanded_items: HashSet<String>,
 }
 
 impl App {
@@ -99,6 +113,7 @@ impl App {
             error_message: None,
             filter_input: String::new(),
             filter_active: false,
+            expanded_items: HashSet::new(),
         }
     }
 
@@ -234,26 +249,172 @@ impl App {
         if let Some(client) = self.db.client() {
             match &self.browser_items[self.browser_selected].clone() {
                 BrowserItem::Schema(schema) => {
-                    // Load tables for this schema
-                    self.tables = crate::db::list_tables(client, schema).await?;
+                    let key = format!("schema:{}", schema);
                     
-                    // Insert tables after the schema
-                    let insert_pos = self.browser_selected + 1;
-                    for (i, table) in self.tables.iter().enumerate() {
+                    if self.expanded_items.contains(&key) {
+                        // COLLAPSE: Remove the 3 folders and their contents
+                        self.collapse_schema(&key);
+                    } else {                        // EXPAND: Insert folders after the schema
+                        let insert_pos = self.browser_selected + 1;
                         self.browser_items.insert(
-                            insert_pos + i,
-                            BrowserItem::Table(schema.clone(), table.name.clone()),
+                            insert_pos,
+                            BrowserItem::Folder(schema.clone(), FolderType::Tables),
                         );
+                        self.browser_items.insert(
+                            insert_pos + 1,
+                            BrowserItem::Folder(schema.clone(), FolderType::Views),
+                        );
+                        self.browser_items.insert(
+                            insert_pos + 2,
+                            BrowserItem::Folder(schema.clone(), FolderType::Functions),
+                        );
+                        self.expanded_items.insert(key);
+                    }
+                }
+                BrowserItem::Folder(schema, folder_type) => {
+                    let key = format!("folder:{}:{:?}", schema, folder_type);
+                    
+                    if self.expanded_items.contains(&key) {
+                        // COLLAPSE: Remove child items
+                        self.collapse_folder(&key);
+                    } else {
+                        // EXPAND: Load and insert items
+                        let insert_pos = self.browser_selected + 1;
+                        
+                        match folder_type {
+                            FolderType::Tables => {
+                                // Load and insert tables
+                                self.tables = crate::db::list_tables(client, schema).await?;
+                                for (i, table) in self.tables.iter().enumerate() {
+                                    self.browser_items.insert(
+                                        insert_pos + i,
+                                        BrowserItem::Table(schema.clone(), table.name.clone()),
+                                    );
+                                }
+                            }
+                            FolderType::Views => {
+                                let views = crate::db::list_views(client, schema).await?;
+                                for (i, view) in views.iter().enumerate() {
+                                    self.browser_items.insert(
+                                        insert_pos + i,
+                                        BrowserItem::View(schema.clone(), view.name.clone()),
+                                    );
+                                }
+                            }
+                            FolderType::Functions => {
+                                // Load and insert functions
+                                let functions = crate::db::list_functions(client, schema).await?;
+                                for (i, func) in functions.iter().enumerate() {
+                                    self.browser_items.insert(
+                                        insert_pos + i,
+                                        BrowserItem::Function(schema.clone(), func.name.clone()),
+                                    );
+                                }
+                            }
+                        }
+                        self.expanded_items.insert(key);
                     }
                 }
                 BrowserItem::Table(schema, table) => {
-                    // Load columns for this table
                     self.columns = crate::db::describe_table(client, schema, table).await?;
+                }
+                BrowserItem::View(schema, view) => {
+                    self.columns = crate::db::describe_table(client, schema, view).await?;
+                }
+                BrowserItem::Function(_schema, _function) => {
+                    // For now, just show a message that function details aren't implemented yet
+                    // In the future, we could show function parameters and return type
+                    self.columns.clear();
                 }
             }
         }
 
         Ok(())
+    }
+
+    fn collapse_schema(&mut self, key: &str) {
+        // Find how many items to remove (3 folders + their children)
+        let mut remove_count = 0;
+        let start_pos = self.browser_selected + 1;
+        
+        // Count folders (should be 3) and their children
+        let mut i = start_pos;
+        let mut folders_found = 0;
+        
+        while i < self.browser_items.len() && folders_found < 3 {
+            match &self.browser_items[i] {
+                BrowserItem::Folder(schema, folder_type) => {
+                    // Remove this folder from expanded set
+                    let folder_key = format!("folder:{}:{:?}", schema, folder_type);
+                    self.expanded_items.remove(&folder_key);
+                    remove_count += 1;
+                    i += 1;
+                    folders_found += 1;
+                    
+                    // Count children of this folder
+                    while i < self.browser_items.len() {
+                        match &self.browser_items[i] {
+                            BrowserItem::Table(_, _) | BrowserItem::View(_, _) | BrowserItem::Function(_, _) => {
+                                remove_count += 1;
+                                i += 1;
+                            }
+                            _ => break,
+                        }
+                    }
+                }
+                _ => break,
+            }
+        }
+        
+        // Remove all items
+        for _ in 0..remove_count {
+            if start_pos < self.browser_items.len() {
+                self.browser_items.remove(start_pos);
+            }
+        }
+        
+        // Adjust selection if it was on a removed item
+        if self.browser_selected >= start_pos && self.browser_selected < start_pos + remove_count {
+            self.browser_selected = start_pos - 1; // Move to the schema itself
+        } else if self.browser_selected >= start_pos + remove_count {
+            self.browser_selected -= remove_count;
+        }
+        
+        self.expanded_items.remove(key);
+    }
+
+    fn collapse_folder(&mut self, key: &str) {
+        // Find how many child items to remove
+        let mut remove_count = 0;
+        let start_pos = self.browser_selected + 1;
+        
+        // Count children
+        let mut i = start_pos;
+        while i < self.browser_items.len() {
+            match &self.browser_items[i] {
+                BrowserItem::Table(_, _) | BrowserItem::View(_, _) | BrowserItem::Function(_, _) => {
+                    remove_count += 1;
+                    i += 1;
+                }
+                _ => break,
+            }
+        }
+        
+        // Remove all child items
+        for _ in 0..remove_count {
+            if start_pos < self.browser_items.len() {
+                self.browser_items.remove(start_pos);
+            }
+        }
+        
+        // Adjust selection if it was on a removed item
+        if self.browser_selected >= start_pos && self.browser_selected < start_pos + remove_count {
+            self.browser_selected = start_pos - 1; // Move to the folder itself
+        } else if self.browser_selected >= start_pos + remove_count {
+            self.browser_selected -= remove_count;
+        }
+        
+        self.expanded_items.remove(key);
     }
 
     // Query handling
@@ -340,8 +501,18 @@ impl App {
                 BrowserItem::Schema(name) => {
                     name.to_lowercase().contains(&filter_lower)
                 }
+                BrowserItem::Folder(_, _) => {
+                    false
+                }
                 BrowserItem::Table(schema, name) => {
-                    // Match if table name or schema name matches
+                    name.to_lowercase().contains(&filter_lower)
+                        || schema.to_lowercase().contains(&filter_lower)
+                }
+                BrowserItem::View(schema, name) => {
+                    name.to_lowercase().contains(&filter_lower)
+                        || schema.to_lowercase().contains(&filter_lower)
+                }
+                BrowserItem::Function(schema, name) => {
                     name.to_lowercase().contains(&filter_lower)
                         || schema.to_lowercase().contains(&filter_lower)
                 }

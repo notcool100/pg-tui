@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use tokio_postgres::Client;
 
-use super::{Column, Database, QueryResult, Schema, Table};
+use super::{Column, Database, Function, QueryResult, Schema, Table, View};
 
 pub async fn list_databases(client: &Client) -> Result<Vec<Database>> {
     let rows = client
@@ -71,6 +71,53 @@ pub async fn list_tables(client: &Client, schema: &str) -> Result<Vec<Table>> {
         .collect();
 
     Ok(tables)
+}
+
+pub async fn list_views(client: &Client, schema: &str) -> Result<Vec<View>> {
+    let rows = client
+        .query(
+            "SELECT table_schema, table_name 
+             FROM information_schema.views 
+             WHERE table_schema = $1
+             ORDER BY table_name",
+            &[&schema],
+        )
+        .await
+        .context("Failed to list views")?;
+
+    let views = rows
+        .iter()
+        .map(|row| View {
+            schema: row.get(0),
+            name: row.get(1),
+        })
+        .collect();
+
+    Ok(views)
+}
+
+pub async fn list_functions(client: &Client, schema: &str) -> Result<Vec<Function>> {
+    let rows = client
+        .query(
+            "SELECT routine_schema, routine_name, routine_type
+             FROM information_schema.routines
+             WHERE routine_schema = $1
+             ORDER BY routine_name",
+            &[&schema],
+        )
+        .await
+        .context("Failed to list functions")?;
+
+    let functions = rows
+        .iter()
+        .map(|row| Function {
+            schema: row.get(0),
+            name: row.get(1),
+            function_type: row.get(2),
+        })
+        .collect();
+
+    Ok(functions)
 }
 
 pub async fn describe_table(client: &Client, schema: &str, table: &str) -> Result<Vec<Column>> {
